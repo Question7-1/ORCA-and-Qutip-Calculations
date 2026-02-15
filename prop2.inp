@@ -1,0 +1,35 @@
+! PBE UKS ZORA TightSCF ESD(ABS) MORead
+
+%moinp "eu_freq.gbw"
+
+%pal nprocs 8 end
+%maxcore 7000
+
+%basis
+  newgto Eu "SARC-ZORA-TZVP" end
+  newgto O  "ZORA-def2-TZVP" end
+  newgto N  "ZORA-def2-TZVP" end
+  newgto C  "ZORA-def2-TZVP" end
+  newgto H  "ZORA-def2-SVP"  end
+end
+
+* xyzfile 0 7 eu_freq.xyz  # Use the optimized geometry file
+
+%eprnmr
+  gtensor true
+  dtensor ssandso
+  dss uno
+  dsoc cp
+  nuclei = all Eu { fgrad, AISO, ADIP, AORB }
+end
+
+%tddft
+  nroots 20
+end
+
+%esd
+  GSHessian "eu_freq.hess"
+  HessFlag VG
+  PrintLevel 3
+  States 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+end
