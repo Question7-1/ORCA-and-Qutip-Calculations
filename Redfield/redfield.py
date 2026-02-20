@@ -1,59 +1,35 @@
-"""
-Calculates T1 time using QuTiP and Redfield theory
-All parameters from ORCA calculations
-
-Temperature: 4.2 K, Nuclear spin: I = 5/2 (Eu)
-Target: T1 = 41.39 s, T2 = 205 ns
-"""
-
 import numpy as np
 import qutip as qt
 import matplotlib.pyplot as plt
 from scipy import constants
+from scipy.linalg import expm as matrix_expm
 
-print("="*70)
-print("Eu(dpphen)(NO3)3 Nuclear Spin Qubit Simulation")
-print("="*70)
+print("=" * 70)
+print("=" * 70)
 
 # ============================================================================
-# Physical Constants & Parameters
-# ============================================================================
-
 # Constants
-h_bar = constants.hbar
-k_B = constants.k
-mu_N = constants.physical_constants['nuclear magneton'][0]  # J/T
-cm_inv_to_Hz = constants.c * 100
-MHz_to_Hz = 1e6
+# ============================================================================
+hbar   = constants.hbar
+k_B    = constants.k
+c_SI   = constants.c
+cm2Hz  = c_SI * 100        # cm^-1 -> Hz (linear)
+MHz    = 1e6
+GHz    = 1e9
+TWO_PI = 2 * np.pi
 
-# System parameters
-T = 4.2  # Kelvin
-I = 5/2  # Nuclear spin
-B_field = 0.0  # Tesla (zero field)
-g_N = 0.6134  # Eu-153
+# ============================================================================
+# Physical parameters (from my ORCA calculations)
+# ============================================================================
+T_bath = 4.2          # K
+I      = 5 / 2
+dim    = int(2 * I + 1)
+T1_exp = 41.39        # s (experimental)
 
-# Experimental targets
-T1_experimental = 41.39  # seconds
-T2_experimental = 0.205e-6  # seconds (205 ns)
+e2qQ_h_MHz = -1858.043213
+eta_Q      = 0.940691
+A_iso_MHz  = -9.9235
 
-# ORCA parameters
-e2qQ_h = -1858.043213  # MHz
-eta_Q = 0.940691
-A_iso = -9.9235  # MHz
-
-# Full hyperfine tensor from ORCA (in MHz)
-A_tensor = np.array([
-    [62.4219,   24.6983,  -16.0468],
-    [ 24.6983, 42.4589,   2.7507],
-    [-16.0468,   2.7507,  63.7790]
-])
-
-# Diagonalize to get principal values
-A_eigenvalues, A_eigenvectors = np.linalg.eigh(A_tensor)
-print(f"HFC principal values: {A_eigenvalues} MHz")
-print(f"HFC isotropic: {A_iso:.2f} MHz")
-
-# Huang-Rhys factors (40 modes with S > 0.01)
 huang_rhys_modes = [
     (23.02, 0.111), (37.61, 0.026), (38.25, 0.025), (41.41, 0.050),
     (53.00, 0.018), (57.20, 0.032), (76.86, 0.013), (80.03, 0.082),
@@ -67,225 +43,329 @@ huang_rhys_modes = [
     (1007.41, 0.111), (1015.95, 0.016), (1096.71, 0.024), (1131.89, 0.021),
 ]
 
-# Nuclear spin bath: nearby spins causing spectral diffusion
-# Coordinates from ORCA (Angstrom), relative to Eu at origin
-bath_spins = [
-    # Format: (element, I, x, y, z) - positions relative to Eu
-    # H atoms (I = 1/2)
-    ('H', 0.5, -4.377754, 1.147464, 3.671829),
-    ('H', 0.5, 2.705193, 1.730396, -5.172580),
-    ('H', 0.5, -4.524319, 3.360769, 2.498627),
-    ('H', 0.5, -3.772097, 4.853370, 0.664598),
-    ('H', 0.5, 0.772214, 3.436250, -4.251066),
-    ('H', 0.5, -2.312284, 5.238476, -1.335962),
-    ('H', 0.5, 2.782100, -0.272415, -3.256752),
-    ('H', 0.5, -0.553727, 4.406667, -2.875001),
-    ('H', 0.5, -3.379545, -1.115950, 3.816080),
-    ('H', 0.5, -2.464911, -3.032421, 3.784891),
-    ('H', 0.5, 0.555278, -4.133950, 0.877101),
-    ('H', 0.5, -0.915200, -5.147595, 3.001573),
-    # N atoms (I = 1)
-    ('N', 1.0, -1.384994, 2.250116, -0.628577),   # N10 relative to Eu
-    ('N', 1.0, -2.227990, 0.593825, 1.386424),    # N11
-    ('N', 1.0, -2.126693, -1.528136, 2.322551),   # N12
-    ('N', 1.0, 0.880523, 1.522349, 2.381702),     # N13
-    ('N', 1.0, -0.022078, 2.509503, -2.486584),   # N15
-    ('N', 1.0, -1.423406, -1.498989, -2.100499),  # N16
-    ('N', 1.0, 0.593269, 1.338372, -2.167569),    # N18
-    ('N', 1.0, -1.183328, -1.864174, 1.399839),   # N19
-]
+# Pre-compute mode quantities (rad/s)
+omega_modes = np.array([om_cm * cm2Hz * TWO_PI for om_cm, _ in huang_rhys_modes])
+S_vals      = np.array([S for _, S in huang_rhys_modes])
 
-print(f"Nuclear spin bath: {len(bath_spins)} spins (H + N on ligands)")
-print(f"Note: Bath causes spectral diffusion → limits T2 to ~200 ns")
-print(f"NQC: e²qQ/h = {e2qQ_h:.1f} MHz, η = {eta_Q:.3f}")
-print(f"HFC: A_iso = {A_iso:.2f} MHz")
-print(f"Huang-Rhys: {len(huang_rhys_modes)} modes, Σ S = {sum(S for _,S in huang_rhys_modes):.2f}")
-print(f"Note: Orbach/ZFS not included - states too high in energy (>2800 cm⁻¹, frozen at 4.2K)")
+# Bose-Einstein occupancies
+x_modes = hbar * omega_modes / (k_B * T_bath)
+n_modes = np.where(x_modes < 50, 1.0 / np.expm1(x_modes), 0.0)
 
 # ============================================================================
-# Build Hamiltonian
+# Hamiltonian
 # ============================================================================
+Ix = qt.jmat(I, "x")
+Iy = qt.jmat(I, "y")
+Iz = qt.jmat(I, "z")
+Ip = qt.jmat(I, "+")
+Im = qt.jmat(I, "-")
+Id = qt.qeye(dim)
 
-# Nuclear spin operators
-Ix = qt.jmat(I, 'x')
-Iy = qt.jmat(I, 'y')
-Iz = qt.jmat(I, 'z')
-I_plus = qt.jmat(I, '+')
-I_minus = qt.jmat(I, '-')
-I_identity = qt.qeye(int(2*I + 1))
+pf_Q  = (TWO_PI * e2qQ_h_MHz * MHz) / (4 * I * (2 * I - 1))
+H_NQC = pf_Q * (3*Iz*Iz - I*(I+1)*Id + eta_Q*(Ip*Ip + Im*Im))
+H_HFC = TWO_PI * A_iso_MHz * MHz * Iz
+H_0   = H_NQC + H_HFC
 
-# Hamiltonian: H = H_NQC + H_HFC (zero field)
-prefactor_NQC = (e2qQ_h * MHz_to_Hz) / (4 * I * (2*I - 1))
-H_NQC = prefactor_NQC * (3*Iz*Iz - I*(I+1)*I_identity + eta_Q*(I_plus*I_plus + I_minus*I_minus))
+print(f"\nH_NQC: e2qQ/h = {e2qQ_h_MHz:.3f} MHz, eta_Q = {eta_Q:.4f}")
+print(f"H_HFC: A_iso  = {A_iso_MHz:.4f} MHz")
 
-# Hyperfine: use full tensor (diagonal approximation in principal axis frame)
-# H_HFC = A_xx*Ix^2 + A_yy*Iy^2 + A_zz*Iz^2 (simplified)
-# For nuclear spin relaxation, use the largest anisotropic component
-A_zz = A_eigenvalues[2]  # Largest magnitude component
-H_HFC = A_zz * MHz_to_Hz * Iz
-
-H_0 = H_NQC + H_HFC
-
-E_levels = H_0.eigenenergies()
-print(f"\nEnergy levels (MHz): {E_levels/MHz_to_Hz}")
-
-# ============================================================================
-# Spectral Densities & Relaxation
-# ============================================================================
-
-def spectral_density(omega, T, modes):
-    """Huang-Rhys spectral density + two-phonon Raman"""
-    J = 0.0
-    gamma = 1e9  # Hz, phonon linewidth
-    
-    for omega_ph_cm, S_k in modes:
-        omega_ph = omega_ph_cm * cm_inv_to_Hz
-        x = h_bar * 2*np.pi*omega_ph / (k_B * T)
-        n_BE = 1/(np.exp(x)-1) if x < 50 else 0.0
-        
-        # Lorentzian-broadened delta functions
-        lorentz_em = gamma/(2*np.pi) / ((omega-omega_ph)**2 + (gamma/2)**2)
-        lorentz_abs = gamma/(2*np.pi) / ((omega+omega_ph)**2 + (gamma/2)**2)
-        J += S_k * omega_ph * ((n_BE+1)*lorentz_em + n_BE*lorentz_abs)
-    
-    # Add two-phonon Raman
-    omega_D = 200 * cm_inv_to_Hz
-    if abs(omega) < omega_D:
-        J += (abs(omega)/omega_D)**3 * (T/300)**4 * 1e6
-    
-    return J
-
-# Build collapse operators
 evals, evecs = H_0.eigenstates()
-collapse_ops = []
-rates = []
+evals = np.real(evals)
 
-for i in range(len(evals)):
-    for j in range(i+1, len(evals)):
-        omega_ij = evals[j] - evals[i]
-        if abs(omega_ij) < 1e3:  # Skip < 1 kHz
-            continue
-        
-        J_ij = spectral_density(omega_ij, T, huang_rhys_modes)
-        gamma_ij = 2 * np.pi * J_ij
-        
-        if gamma_ij > 1e-6:
-            collapse_ops.append(np.sqrt(gamma_ij) * evecs[j] * evecs[i].dag())
-            rates.append(gamma_ij)
+print(f"\nEnergy levels / 2pi (MHz):")
+for i, E in enumerate(evals):
+    print(f"  |{i}>  E = {E/(TWO_PI*MHz):+.4f} MHz")
 
-# Add nuclear spin bath contribution (spectral diffusion)
-# Dipolar coupling: A_dip ≈ μ₀/(4π) * (g_I * g_bath * μ_N²) / r³
-mu_0 = constants.mu_0
-g_bath_H = 5.586  # Proton g-factor
-g_bath_N = 0.404  # 14N g-factor
-
-Gamma_bath = 0.0
-for element, I_bath, x, y, z in bath_spins:
-    r = np.sqrt(x**2 + y**2 + z**2) * 1e-10  # Angstrom to meters
-    
-    if element == 'H':
-        g_bath = g_bath_H
-    elif element == 'N':
-        g_bath = g_bath_N
-    else:
-        continue
-    
-    # Dipolar coupling strength (Hz)
-    A_dip = (mu_0/(4*np.pi)) * (g_N * g_bath * mu_N**2) / (r**3) / h_bar / (2*np.pi)
-    
-    # Spectral diffusion rate ∝ A_dip²
-    # Simple estimate: Γ_bath ∝ Σ A_i²
-    Gamma_bath += A_dip**2 / (100e6)  # Normalize by ~100 MHz
-
-# Add bath contribution to rates
-if Gamma_bath > 0:
-    rates_phonon = sum(rates)
-    rates.append(Gamma_bath)
-    print(f"\nRelaxation rates:")
-    print(f"  Phonon (direct + Raman): {rates_phonon:.3e} Hz")
-    print(f"  Nuclear spin bath:       {Gamma_bath:.3e} Hz")
-    print(f"  Total:                   {sum(rates):.3e} Hz")
-else:
-    print(f"\nRelaxation: {len(collapse_ops)} channels (direct + Raman phonon processes)")
-    print(f"Total rate: {sum(rates):.3e} Hz")
-
-# ============================================================================
-# Calculate T1 and T2
-# ============================================================================
+dE_45 = abs(evals[5] - evals[4]) / (TWO_PI * MHz)
 
 # Thermal populations
-beta_energy = 1 / (k_B * T)
-E_J = evals * h_bar * 2 * np.pi
-boltzmann = np.exp(-beta_energy * E_J)
-thermal_pops = boltzmann / np.sum(boltzmann)
-
-# T1: analytical solution
-total_rate = sum(rates) if rates else 1/T1_experimental
-T1_calc = 1 / total_rate
-times_T1 = np.linspace(0, 100, 100)
-pop_T1 = thermal_pops[-1] + (1 - thermal_pops[-1]) * np.exp(-total_rate * times_T1)
-
-print(f"\n✓ T1 (calculated) = {T1_calc:.2f} s  (exp: {T1_experimental:.2f} s, ratio: {T1_calc/T1_experimental:.2f}×)")
-print(f"\nRelaxation mechanisms: Direct phonon + Raman + nuclear spin bath estimate")
-print(f"Remaining discrepancy likely from: bath spin dynamics, Orbach (if low-lying states exist)")
-print(f"\nT2 not calculated: Redfield theory models T1 relaxation but doesn't capture")
-print(f"pure dephasing mechanisms (spectral diffusion, charge noise, spin bath).")
-print(f"These dominate experimental T2 = {T2_experimental*1e9:.0f} ns.")
+beta      = 1.0 / (k_B * T_bath)
+boltzmann = np.exp(-beta * hbar * evals)
+boltzmann /= boltzmann.sum()
+print(f"\nThermal populations: {np.round(boltzmann, 6)}")
+print(f"  (Near-equal: hbar*omega_max / kT = "
+      f"{hbar*np.max(np.abs(evals))/(k_B*T_bath)*1000:.2f} milli-units -> classical limit)")
 
 # ============================================================================
-# Plot Results
+# Spectral density
 # ============================================================================
+def make_spectral_density(gamma_ph):
+    """
+    J(omega) = sum_k S_k * omega_k * [(n_k+1)*L(omega-omega_k) + n_k*L(omega+omega_k)]
+    L(f; fk, gk) = (gk/2pi) / ((f - fk)^2 + (gk/2)^2)
+    gamma_ph: shared Lorentzian FWHM in rad/s.
+    """
+    gk_hz = gamma_ph / TWO_PI  # shared linewidth in Hz
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    def sd(omega):
+        f     = omega / TWO_PI
+        fk    = omega_modes / TWO_PI
+        L_em  = gk_hz / ((f - fk)**2 + (gk_hz/2)**2)
+        L_abs = gk_hz / ((f + fk)**2 + (gk_hz/2)**2)
+        return float(max(np.sum(S_vals * omega_modes * ((n_modes+1)*L_em + n_modes*L_abs)), 0.0))
 
-# Plot 1: Energy levels (all states labeled, spaced to avoid overlap)
-# Draw energy levels
-for i, E in enumerate(E_levels):
-    ax1.hlines(E/MHz_to_Hz, 0, 1, colors='blue', linewidth=3)
+    return sd
 
-# Add labels with smart positioning to avoid overlap
-label_positions = []
-for i, E in enumerate(E_levels):
-    m_val = I - i
-    E_mhz = E / MHz_to_Hz
-    
-    # Check if this position would overlap with previous labels
-    min_spacing = 20  # MHz minimum spacing for labels
-    y_pos = E_mhz
-    
-    # Adjust position if too close to any previous label
-    for prev_pos in label_positions:
-        if abs(y_pos - prev_pos) < min_spacing:
-            # Shift upward slightly
-            y_pos = prev_pos + min_spacing if E_mhz > prev_pos else prev_pos - min_spacing
-    
-    ax1.text(1.15, y_pos, f'm={m_val:.1f}', fontsize=9, va='center')
-    label_positions.append(y_pos)
-    
-    # Draw connecting line if label was shifted
-    if abs(y_pos - E_mhz) > 1:
-        ax1.plot([1.05, 1.12], [E_mhz, y_pos], 'k-', linewidth=0.5, alpha=0.3)
+# ============================================================================
+# Coupling operators
+# ============================================================================
+V_axial   = 3*Iz*Iz - I*(I+1)*Id
+V_rhombic = Ip*Ip + Im*Im
 
-ax1.set_xlim(-0.2, 1.7)
-ax1.set_ylabel('Energy (MHz)', fontsize=11)
-ax1.set_title('Nuclear Spin Energy Levels', fontsize=12, fontweight='bold')
-ax1.set_xticks([])
-ax1.grid(True, alpha=0.3, axis='y')
+def make_a_ops(gamma_ph):
+    sd = make_spectral_density(gamma_ph)
+    return [[V_rhombic, sd], [Ix, sd], [V_axial, sd]]
 
-# Plot 2: T1 decay
-ax2.plot(times_T1, pop_T1, 'b-', linewidth=2, label='Population')
-ax2.axhline(thermal_pops[-1], color='gray', linestyle=':', linewidth=2, label='Thermal')
-ax2.set_xlabel('Time (s)', fontsize=11)
-ax2.set_ylabel('Population', fontsize=11)
-ax2.set_title(f'T₁ = {T1_calc:.1f} s (calc) vs {T1_experimental:.1f} s (exp)', fontsize=12, fontweight='bold')
-ax2.legend(fontsize=9)
-ax2.grid(True, alpha=0.3)
+# ============================================================================
+# KMS check at a given gamma_ph
+# ============================================================================
+def check_kms(gamma_ph, label=""):
+    sd = make_spectral_density(gamma_ph)
+    print(f"\nKMS check [{label}]:")
+    print(f"  {'freq (MHz)':>12}  {'J_emit':>12}  {'J_abs':>12}  "
+          f"{'ratio J_abs/J_emit':>18}  {'exp(-hbar*om/kT)':>16}  {'OK?':>5}")
+    for f_MHz in [42, 476, 500, 774, 1243]:
+        om  = TWO_PI * f_MHz * MHz
+        je  = sd(+om)
+        ja  = sd(-om)
+        ratio    = ja/je if je > 0 else 0
+        expected = np.exp(-hbar * om / (k_B * T_bath))
+        ok = "YES" if abs(ratio - expected) < 0.01 else "WARN"
+        print(f"  {f_MHz:>12}  {je:>12.4e}  {ja:>12.4e}  {ratio:>18.6f}  {expected:>16.6f}  {ok:>5}")
+
+# ============================================================================
+# Core function: build R, extract T1 from amplitude-weighted eigenmode
+# ============================================================================
+pop_idx = [i*dim + i for i in range(dim)]
+
+def compute_T1(gamma_ph, verbose=False):
+    """Returns T1 = 1 / |lambda_slowest_nonzero|."""
+    sec_cutoff = TWO_PI * 1e6
+    R, ekets   = qt.bloch_redfield_tensor(H_0, make_a_ops(gamma_ph), sec_cutoff=sec_cutoff)
+    R_mat      = R.full()
+    R_pop      = np.real(R_mat[np.ix_(pop_idx, pop_idx)])
+
+    # Diagonalise
+    lams, vecs = np.linalg.eig(R_pop)
+    lams = np.real(lams)
+
+    # Zero-eigenvalue threshold (stationary state)
+    max_rate = np.max(np.abs(lams))
+    thresh   = max(max_rate * 1e-6, 1e-30)
+    is_zero  = np.abs(lams) < thresh
+
+    nonzero_lams = lams[~is_zero]
+    T1 = 1.0 / np.min(np.abs(nonzero_lams)) if len(nonzero_lams) > 0 else np.inf
+
+    # Amplitude decomposition for initial state |5> (informational)
+    p0 = np.zeros(dim); p0[-1] = 1.0
+    try:
+        c = np.linalg.solve(vecs, p0)
+    except np.linalg.LinAlgError:
+        c = np.linalg.lstsq(vecs, p0, rcond=None)[0]
+    amplitudes = np.real(c * vecs[-1, :])
+
+    if verbose:
+        print(f"\nEigenmode decomposition of |5> population:")
+        print(f"  {'k':>3}  {'lambda (rad/s)':>16}  {'tau (s)':>12}  "
+              f"{'amp in |5>':>12}  {'note':>10}")
+        order = np.argsort(np.abs(lams))
+        for k in order:
+            tau_s  = f"{1/abs(lams[k]):.4e}" if abs(lams[k]) > thresh else "inf"
+            note   = "<-- T1 (slowest)" if (abs(lams[k]) > thresh and
+                      abs(lams[k]) == np.min(np.abs(lams[np.abs(lams)>thresh]))) else ""
+            print(f"  {k:>3}  {lams[k]:>16.4e}  {tau_s:>12}  "
+                  f"{amplitudes[k]:>12.4e}  {note}")
+        print(f"\n  T1 (slowest eigenvalue) = {T1:.4e} s")
+
+    return T1, R_pop, lams, amplitudes, is_zero, vecs
+
+# ============================================================================
+# Main run at gamma_ph = 1 GHz
+# ============================================================================
+gamma_ph_main = TWO_PI * 1.0 * GHz
+print(f"\n{'='*70}")
+print(f"Main run: gamma_ph/2pi = {gamma_ph_main/TWO_PI/GHz:.1f} GHz")
+print(f"{'='*70}")
+
+check_kms(gamma_ph_main, label="gamma_ph = 1 GHz")
+
+print("\nBuilding Bloch-Redfield tensor ...")
+T1_main, R_pop_main, lams_main, amps_main, iz_main, vecs_main = \
+    compute_T1(gamma_ph_main, verbose=True)
+
+print(f"\n{'='*50}")
+print(f"  T1 (slowest eigenvalue)  = {T1_main:.4e} s")
+print(f"  T1 (experimental)        = {T1_exp:.2f} s")
+print(f"  Ratio                    = {T1_main/T1_exp:.3f}x")
+print(f"{'='*50}")
+
+# Transition rate matrix W — extract from R_pop_main diagonal structure
+# R_pop[i,i] = -sum_{j!=i} W[j,i], R_pop[i,j] = W[i,j] for i!=j
+W = np.zeros((dim, dim))
+for i in range(dim):
+    for j in range(dim):
+        if i != j:
+            W[i,j] = float(max(R_pop_main[i, j], 0.0))
+
+print(f"\nTransition rate matrix W_ij (s^-1):")
+print(np.array2string(W, formatter={"float_kind": lambda x: f"{x:9.3e}"}))
+
+# ============================================================================
+# gamma_ph SCAN — 1 to 100 GHz (actually executed)
+# ============================================================================
+print(f"\n{'='*70}")
+print(f"gamma_ph scan: 1 to 100 GHz")
+print(f"{'='*70}")
+
+gamma_scan_GHz = np.logspace(0, 2, 20)  # 1 to 100 GHz, 20 points
+T1_scan = []
+
+for g_GHz in gamma_scan_GHz:
+    gph = TWO_PI * g_GHz * GHz
+    t1, _, _, _, _, _ = compute_T1(gph, verbose=False)
+    T1_scan.append(t1)
+    ratio = t1 / T1_exp
+    print(f"  gamma_ph/2pi = {g_GHz:6.1f} GHz  ->  T1 = {t1:.3e} s  "
+          f"(ratio = {ratio:.3f}x)")
+
+T1_scan = np.array(T1_scan)
+
+# Find crossing with T1_exp
+cross_idx = np.where(np.diff(np.sign(T1_scan - T1_exp)))[0]
+if len(cross_idx) > 0:
+    ci = cross_idx[0]
+    g_lo, g_hi = gamma_scan_GHz[ci], gamma_scan_GHz[ci+1]
+    t_lo, t_hi = T1_scan[ci], T1_scan[ci+1]
+    # log-log interpolation
+    g_cross = np.exp(np.interp(np.log(T1_exp),
+                               sorted([np.log(t_lo), np.log(t_hi)]),
+                               sorted([np.log(g_lo), np.log(g_hi)], reverse=(t_lo < t_hi))))
+    print(f"\n  T1 crosses experimental at gamma_ph/2pi ~ {g_cross:.2f} GHz")
+else:
+    g_cross = None
+    print(f"\n  No crossing in 1–100 GHz.")
+    print(f"  T1 ~ 1/gamma_ph throughout (far-tail Lorentzian regime).")
+    print(f"  Extrapolating: crossing expected at gamma_ph/2pi ~ "
+          f"{gamma_scan_GHz[0] * T1_scan[0] / T1_exp:.2f} GHz")
+
+# ============================================================================
+# Population dynamics
+# ============================================================================
+print(f"Printing population dynamics ...")
+p0    = np.zeros(dim); p0[-1] = 1.0
+t_end = 5.0 * T1_main          # integrate to 5 * T1 so slow tail is visible
+tlist = np.linspace(0, t_end, 600)
+
+populations = np.zeros((dim, len(tlist)))
+for k, t in enumerate(tlist):
+    populations[:, k] = np.real(matrix_expm(R_pop_main * t) @ p0)
+
+# Reconstruct slow-mode overlay for |5> analytically
+thresh_main = max(np.max(np.abs(lams_main)) * 1e-6, 1e-30)
+try:
+    c_main = np.linalg.solve(vecs_main, p0)
+except np.linalg.LinAlgError:
+    c_main = np.linalg.lstsq(vecs_main, p0, rcond=None)[0]
+
+nonzero_mask = np.abs(lams_main) > thresh_main
+idx_slowest  = np.where(nonzero_mask)[0][np.argmin(np.abs(lams_main[nonzero_mask]))]
+lam_slow     = lams_main[idx_slowest]
+stat_idx     = np.argmin(np.abs(lams_main))
+p5_stat      = float(np.real(c_main[stat_idx] * vecs_main[-1, stat_idx]))
+A_slow       = float(np.real(c_main[idx_slowest] * vecs_main[-1, idx_slowest]))
+
+t_fine  = np.linspace(0, t_end, 1000)
+p5_slow = p5_stat + A_slow * np.exp(lam_slow * t_fine)
+
+# ============================================================================
+# PLOTS
+# ============================================================================
+fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
+
+# --- Panel 1: Energy levels ---
+ax    = axes[0]
+E_MHz = (evals - evals[0]) / (TWO_PI*MHz)
+for i, E in enumerate(E_MHz):
+    ax.hlines(E, 0.1, 0.9, colors="steelblue", linewidth=3)
+    ax.text(0.93, E, f"|{i}>  {E:+.1f} MHz", fontsize=9, va="center")
+ax.annotate("Near-degenerate\n(eta=0.94)", xy=(0.5, E_MHz[4]),
+            xytext=(1.6, E_MHz[4]-60), fontsize=7.5, color="tomato",
+            arrowprops=dict(arrowstyle="->", color="tomato", lw=0.8))
+ax.set_xlim(0, 2.6); ax.set_ylim(-40, E_MHz[-1]+70)
+ax.set_ylabel("Energy / 2pi (MHz)", fontsize=11)
+ax.set_title("NQC + HFC Energy Levels\nB=0, T=4.2K", fontsize=11, fontweight="bold")
+ax.set_xticks([]); ax.grid(True, alpha=0.3, axis="y")
+
+# --- Panel 2: J(omega) ---
+ax      = axes[1]
+sd_main = make_spectral_density(gamma_ph_main)
+f_plot  = np.logspace(6, 13, 600)
+J_plot  = np.array([sd_main(TWO_PI*f) for f in f_plot])
+ax.loglog(f_plot/GHz, J_plot, color="steelblue", lw=2, label="J(ω)")
+labeled = False
+for i, E_i in enumerate(evals):
+    for j, E_j in enumerate(evals):
+        if i < j:
+            f_trans = abs(E_j - E_i) / TWO_PI
+            if 1e7 < f_trans < 2e9:
+                ax.axvline(f_trans/GHz, color="tomato", lw=0.8, alpha=0.7,
+                           label="Nuclear transitions" if not labeled else "")
+                labeled = True
+for om, S_k in zip(omega_modes, S_vals):
+    ax.axvline(om/TWO_PI/GHz, color="gray",
+               lw=0.3 + 0.8*S_k/S_vals.max(), alpha=0.4, ls="--")
+ax.axvspan(0.001, 2, alpha=0.07, color="tomato")
+ax.set_xlabel("Frequency (GHz)", fontsize=11)
+ax.set_ylabel("J(ω)", fontsize=11)
+ax.set_title(f"Spectral Density\nγ_ph/2π = {gamma_ph_main/TWO_PI/GHz:.0f} GHz",
+             fontsize=11, fontweight="bold")
+ax.legend(fontsize=8); ax.grid(True, alpha=0.3, which="both")
+
+# --- Panel 3: gamma_ph scan ---
+ax = axes[2]
+ax.loglog(gamma_scan_GHz, T1_scan, "o-", color="steelblue", lw=2,
+          label="T1 (slowest eigenvalue)")
+ax.axhline(T1_exp, color="tomato", lw=2, ls="-", label=f"T1 exp = {T1_exp} s")
+if g_cross is not None:
+    ax.axvline(g_cross, color="green", lw=1.5, ls=":",
+               label=f"Crossing ~ {g_cross:.1f} GHz")
+ax.set_xlabel("γ_ph / 2π (GHz)", fontsize=11)
+ax.set_ylabel("T1 (s)", fontsize=11)
+ax.set_title("T1 vs γ_ph Scan\n1–100 GHz", fontsize=11, fontweight="bold")
+ax.legend(fontsize=8); ax.grid(True, alpha=0.3, which="both")
+
+# --- Panel 4: Population dynamics ---
+ax   = axes[3]
+cmap = plt.cm.plasma(np.linspace(0.1, 0.9, dim))
+for i in range(dim):
+    ax.plot(tlist, populations[i], color=cmap[i], lw=1.8, label=f"|{i}>")
+    ax.axhline(boltzmann[i], color=cmap[i], ls=":", lw=0.8, alpha=0.4)
+# Overlay: slowest eigenmode for |5> (this IS T1)
+ax.plot(t_fine, p5_slow, "k--", lw=2, label=f"T1 slow mode\n({T1_main:.1f} s)")
+ax.set_xlabel("Time (s)", fontsize=11)
+ax.set_ylabel("Population", fontsize=11)
+ax.set_title(f"Population Relaxation\n"
+             f"γ_ph/2π = {gamma_ph_main/TWO_PI/GHz:.0f} GHz, T1 = {T1_main:.2e} s",
+             fontsize=11, fontweight="bold")
+ax.legend(fontsize=7.5, ncol=2); ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('eu_qubit_results.png', dpi=150, bbox_inches='tight')
-print("\n✓ Plot saved: eu_qubit_results.png")
 plt.show()
 
+# ============================================================================
+# Final summary
+# ============================================================================
 print("\n" + "="*70)
-print("SIMULATION COMPLETE")
+print("FINAL SUMMARY")
+print("="*70)
+print(f"  gamma_ph/2pi (main run)  = {gamma_ph_main/TWO_PI/GHz:.1f} GHz")
+print(f"  T1 (slowest eigenvalue)  = {T1_main:.4e} s")
+print(f"  T1 (experimental)        = {T1_exp:.2f} s")
+print(f"  Ratio                    = {T1_main/T1_exp:.3f}x")
+if g_cross is not None:
+    print(f"  Best-fit gamma_ph/2pi    ~ {g_cross:.2f} GHz")
+else:
+    extrap = gamma_scan_GHz[0] * T1_scan[0] / T1_exp
+    print(f"  Extrapolated crossing    ~ {extrap:.2f} GHz (below scan range)")
 print("="*70)
