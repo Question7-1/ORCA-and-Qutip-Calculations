@@ -1,0 +1,25 @@
+! PBE UKS ZORA TightSCF MORead NUMFREQ
+
+%moinp "eu_freq.gbw"
+
+%pal nprocs 8 end
+%maxcore 7000
+
+%basis
+  newgto Eu "SARC-ZORA-TZVP" end
+  newgto O  "ZORA-def2-TZVP" end
+  newgto N  "ZORA-def2-TZVP" end
+  newgto C  "ZORA-def2-TZVP" end
+  newgto H  "ZORA-def2-SVP"  end
+end
+
+* xyzfile 0 7 eu_freq.xyz  # Use the optimized geometry file
+
+%elprop
+  Polar 1
+end
+
+%geom
+    InHessName "eu_freq.hess"
+    inhess read
+end
